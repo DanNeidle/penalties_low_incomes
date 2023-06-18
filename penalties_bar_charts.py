@@ -58,6 +58,29 @@ def calculate_allowance_position(year, allowance, decile_starting_incomes):
             return i + (allowance - decile_boundaries[i - 1]) / (decile_boundaries[i] - decile_boundaries[i - 1])
     if allowance >= decile_boundaries[-1]:
         return len(decile_boundaries)
+    
+def add_personal_allowance_line(fig, allowance_position, max_height, annotation_text):
+    fig.add_shape(
+        dict(type="line", x0=allowance_position, x1=allowance_position, y0=0, y1=max_height * 1.1,
+            line=dict(color="Black", width=3))
+    )
+
+    fig.add_annotation(
+        dict(
+            x=allowance_position - 0.1,
+            y=max_height * 1,
+            text=annotation_text,
+            showarrow=False,
+            font=dict(
+                size=12,
+                color="black"
+            ),
+            align="right",
+            xanchor="right",
+            yanchor="bottom"
+        )
+    )
+
 
 
 def add_clustered_bars(fig, years, penalties, colors_charged, colors_appealed, deciles, width):
@@ -89,62 +112,48 @@ def create_clustered_barchart(title, years, width, logo, decile_labels):
         yaxis=dict(tickformat=','),
         legend=dict(x=0.85, y=-0.10),
         template="seaborn")
+    
+def create_barchart_trace(fig, x, y, name, color, offsetgroup=None, base=None):
+    fig.add_trace(
+        go.Bar(x=x, y=y, name=name, marker_color=color, offsetgroup=offsetgroup, base=base))
+
+
+def create_barchart(title, deciles, logo, yaxis_title, yaxis_range=None, dataset=None, template="seaborn"):
+    fig = go.Figure()
+    fig.update_layout(
+        images=[logo],
+        title_text=title,
+        xaxis=dict(title="Income Decile", tickvals=list(range(1, 11)), ticktext=deciles),
+        yaxis=dict(title=yaxis_title, titlefont_size=16, tickfont_size=14, tickformat=',',
+                   range=yaxis_range),
+        legend=dict(x=0.85, y=-0.10), barmode='stack', bargap=0.15, bargroupgap=0.1,
+        template=template)
+    return fig
+
 
 # this plots a barchart for particular years (currently the two most recent ones, i.e. range starts -2)
 def create_yearly_barcharts(years, penalties, deciles, dataset, logo, colors_charged, colors_appealed, personal_allowances, decile_starting_incomes):
     yearly_barchart_fig = {}
     for i in range(-2, 0):
         year, (charged, appealed, decile_labels) = years[i], penalties[years[i]]
-        fig_year = go.Figure()
-
-        for y, color, name in zip([charged, appealed], [colors_charged[0], colors_appealed[0]],
-                                  ['Penalty charged', 'Penalty appealed']):
-            fig_year.add_trace(
-                go.Bar(x=deciles, y=y, name=name, marker_color=color, offsetgroup=0,
-                       base=charged if name == 'Penalty appealed' else None))
+        fig_year = create_barchart(
+            title=f"Self-assessment taxpayers in each income decile assessed with {dataset} penalties - {year}",
+            deciles=decile_labels,
+            logo=logo,
+            yaxis_title="Number of Taxpayers"
+        )
 
         max_height = max(a + b for a, b in zip(charged, appealed))
+        for y, color, name in zip([charged, appealed], [colors_charged[0], colors_appealed[0]], ['Penalty charged', 'Penalty appealed']):
+            create_barchart_trace(fig_year, deciles, y, name, color)
 
         # Add the vertical line at the position of the personal allowance
         allowance_position = calculate_allowance_position(year, personal_allowances[year], decile_starting_incomes) - 0.5
-
-        fig_year.add_shape(
-            dict(type="line", x0=allowance_position, x1=allowance_position, y0=0, y1=max_height * 1.1,
-                line=dict(color="Black", width=3))
-        )
+        allowance_annotation_text = f'Personal allowance<br>£{personal_allowances[year]} - incomes<br>under this are not taxed'
+        add_personal_allowance_line(fig_year, allowance_position, max_height, allowance_annotation_text)
         
-        fig_year.add_annotation(
-            dict(
-                x=allowance_position - 0.1,
-                y=max_height * 1,
-                text=f'Personal allowance<br>£{personal_allowances[year]} - incomes<br>under this are not taxed',
-                showarrow=False,
-                font=dict(
-                    size=12,
-                    color="black"
-                ),
-                align="right",
-                xanchor="right",
-                yanchor="bottom"
-            )
-        )
-
-        
-        fig_year.update_layout(
-            images=[logo],
-            title_text=f"Self-assessment taxpayers in each income decile assessed with {dataset} penalties - {year}",
-            xaxis=dict(title="Income Decile", tickvals=list(range(1, 11)), ticktext=decile_labels),
-            yaxis=dict(title="Number of Taxpayers", titlefont_size=16, tickfont_size=14, tickformat=',',
-                       range=[0, max_height * 1.1]),
-            legend=dict(x=0.85, y=-0.10), barmode='stack', bargap=0.15, bargroupgap=0.1,
-            template="seaborn")
-
-        fig_year.update_traces(
-            hovertemplate='Decile: %{x}<br>Count: %{y}<extra></extra>',
-            marker_line_color='rgba(0, 0, 0, 0)',
-            marker_line_width=1.5, opacity=1)
-
         yearly_barchart_fig[year] = fig_year
+        
     return yearly_barchart_fig
 
 
@@ -154,59 +163,26 @@ def sum_penalties_by_decile(df):
     return total_charged, total_appealed
 
 def create_total_barchart(deciles, decile_names, total_charged, total_appealed, logo, dataset, personal_allowances, decile_starting_incomes):
-    fig = go.Figure()
-    for y, color, name in zip([total_charged, total_appealed], [colors_charged[0], colors_appealed[0]],
-                              ['Total Penalty charged', 'Total Penalty appealed']):
-        fig.add_trace(
-            go.Bar(x=deciles, y=y, name=name, marker_color=color, offsetgroup=0,
-                   base=total_charged if name == 'Total Penalty appealed' else None))
+    fig = create_barchart(
+        title=f"Total number of {dataset} penalties on taxpayers in each income decile - 2018/19  to 2021/22",
+        deciles=decile_names,
+        logo=logo,
+        yaxis_title="Number of Taxpayers"
+    )
 
     max_height = max(a + b for a, b in zip(total_charged, total_appealed))
+    for y, color, name in zip([total_charged, total_appealed], [colors_charged[0], colors_appealed[0]], ['Total Penalty charged', 'Total Penalty appealed']):
+        create_barchart_trace(fig, deciles, y, name, color, offsetgroup=0, base=total_charged if name == 'Total Penalty appealed' else None)
 
-    fig.update_layout(
-        images=[logo],
-        title_text=f"Total number of {dataset} penalties on taxpayers in each income decile - 2018/19  to 2021/22",
-        xaxis=dict(title="Income Decile", tickvals=list(range(1, 11)), ticktext=decile_names),
-        yaxis=dict(title="Number of Taxpayers", titlefont_size=16, tickfont_size=14, tickformat=',',
-                   range=[0, max_height * 1.1]),
-        legend=dict(x=0.80, y=-0.10), barmode='stack', bargap=0.15, bargroupgap=0.1,
-        template="seaborn")
-    
     # Add the vertical line at the position of the personal allowance
     allowance_positions = 0
     for year in years:
         allowance_positions += calculate_allowance_position(year, personal_allowances[year], decile_starting_incomes) - 0.5
-        
     average_allowance_position = allowance_positions / len(years)
-
-    fig.add_shape(
-        dict(type="line", x0=average_allowance_position, x1=average_allowance_position, y0=0, y1=max_height * 1.1,
-            line=dict(color="Black", width=3))
-    )
+    allowance_annotation_text = f'Personal allowance - incomes<br>under this are not taxed'
+    add_personal_allowance_line(fig, average_allowance_position, max_height, allowance_annotation_text)
     
-    fig.add_annotation(
-        dict(
-            x=average_allowance_position - 0.1,
-            y=max_height * 1,
-            text=f'Personal allowance - incomes<br>under this are not taxed',
-            showarrow=False,
-            font=dict(
-                size=12,
-                color="black"
-            ),
-            align="right",
-            xanchor="right",
-            yanchor="bottom"
-        )
-    )
-
-    fig.update_traces(
-        hovertemplate='Decile: %{x}<br>Count: %{y}<extra></extra>',
-        marker_line_color='rgba(0, 0, 0, 0)',
-        marker_line_width=1.5, opacity=1)
-
     return fig
-
 
 
 def main():
