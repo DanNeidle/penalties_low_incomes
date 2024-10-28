@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-datasets = ["late filing", "late payment"]
+DIRECTORY = "penalties_charts/"
+datasets = ["£100 late filing", "late payment", "£300 late filing"]
 
 logo_file = "logo_full_white_on_blue.jpg"
 colors_charged = ['rgba(220, 0, 0, 0.8)', 'rgba(204, 0, 0, 0.8)', 'rgba(187, 0, 0, 0.8)', 'rgba(170, 0, 0, 0.8)']
@@ -25,7 +26,10 @@ def read_dataset(dataset_path, sheet_name):
     df = pd.read_excel(dataset_path, header=[0, 1], sheet_name=sheet_name)
     decile_starting_incomes = {}
     for year in years:
-        decile_starting_incomes[year] = [income * 1000 for income in df[year, 'decile_starting_income'].tolist()]
+        if (year, 'decile_starting_income') in df.columns:
+            decile_starting_incomes[year] = [income * 1000 for income in df[year, 'decile_starting_income'].tolist()]
+        else:
+            print(f"Warning: No data for {year} in {sheet_name} tab. Skipping this year.")
     return df, decile_starting_incomes
 
 
@@ -41,15 +45,25 @@ def ordinal(n):
         return  str(n) + {1 : 'st', 2 : 'nd', 3 : 'rd'}.get(n % 10, "th")
 
 
-
 def prepare_penalties_data(df, years):
     labels = {}
+    penalties_data = {}
+    
     for year in years:
-        decile_starting_incomes = df[year, 'decile_starting_income'].tolist()
-        labels[year] = [f"{ordinal(i+1)} (£{decile_starting_incomes[i]}k - £{decile_starting_incomes[i+1]}k)" for i in range(len(decile_starting_incomes)-1)] + [f"{ordinal(len(decile_starting_incomes))} (£{decile_starting_incomes[-1]}k+)"]
-    return {year: (df[year, 'Penalty charged'].tolist(),
-                   df[year, 'Penalty initially charged, but cancelled after appeal'].tolist(),
-                   labels[year]) for year in years}
+        if (year, 'decile_starting_income') in df.columns and (year, 'Penalty charged') in df.columns and (year, 'Penalty initially charged, but cancelled after appeal') in df.columns:
+            decile_starting_incomes = df[year, 'decile_starting_income'].tolist()
+            labels[year] = [f"{ordinal(i+1)} (£{decile_starting_incomes[i]}k - £{decile_starting_incomes[i+1]}k)" for i in range(len(decile_starting_incomes)-1)] + [f"{ordinal(len(decile_starting_incomes))} (£{decile_starting_incomes[-1]}k+)"]
+            
+            penalties_data[year] = (
+                df[year, 'Penalty charged'].tolist(),
+                df[year, 'Penalty initially charged, but cancelled after appeal'].tolist(),
+                labels[year]
+            )
+        else:
+            print(f"Warning: Missing data for {year}, skipping.")
+    
+    return penalties_data
+
 
 def calculate_allowance_position(year, allowance, decile_starting_incomes):
     decile_boundaries = decile_starting_incomes[year]
@@ -81,16 +95,18 @@ def add_personal_allowance_line(fig, allowance_position, max_height, annotation_
         )
     )
 
-
-
 def add_clustered_bars(fig, years, penalties, colors_charged, colors_appealed, deciles, width):
     for i, year in enumerate(years):
+        if year not in penalties:
+            print(f"Warning: Skipping {year} as there is no penalty data.")
+            continue
         charged, appealed, _ = penalties[year]
         for y, color, name, legendgroup in zip([charged, appealed], [colors_charged, colors_appealed],
                                                ['Penalty charged', 'Penalty appealed'], ['Penalty charged', 'Penalty appealed']):
             fig.add_trace(
                 go.Bar(x=deciles + i * width, y=y, width=width, name=name if i == 0 else '',
                        legendgroup=legendgroup, marker_color=color[i], marker_line_width=1, showlegend=i == 0))
+
 
 
 def add_year_annotations(fig, years, deciles, width):
@@ -135,7 +151,12 @@ def create_barchart(title, deciles, logo, yaxis_title, yaxis_range=None, dataset
 def create_yearly_barcharts(years, penalties, deciles, dataset, logo, colors_charged, colors_appealed, personal_allowances, decile_starting_incomes):
     yearly_barchart_fig = {}
     for i in range(-2, 0):
-        year, (charged, appealed, decile_labels) = years[i], penalties[years[i]]
+        year = years[i]
+        if year not in penalties:
+            print(f"Warning: No penalty data for {year}. Skipping year.")
+            continue
+
+        charged, appealed, decile_labels = penalties[year]
         fig_year = create_barchart(
             title=f"Self-assessment taxpayers in each income decile assessed with {dataset} penalties - {year}",
             deciles=decile_labels,
@@ -157,6 +178,7 @@ def create_yearly_barcharts(years, penalties, deciles, dataset, logo, colors_cha
     return yearly_barchart_fig
 
 
+
 def sum_penalties_by_decile(df):
     total_charged = df.loc[:, pd.IndexSlice[:, 'Penalty charged']].sum(axis=1).tolist()
     total_appealed = df.loc[:, pd.IndexSlice[:, 'Penalty initially charged, but cancelled after appeal']].sum(axis=1).tolist()
@@ -176,13 +198,20 @@ def create_total_barchart(deciles, decile_names, total_charged, total_appealed, 
 
     # Add the vertical line at the position of the personal allowance
     allowance_positions = 0
+    valid_years_count = 0
+    
     for year in years:
-        allowance_positions += calculate_allowance_position(year, personal_allowances[year], decile_starting_incomes) - 0.5
-    average_allowance_position = allowance_positions / len(years)
-    allowance_annotation_text = f'Personal allowance - incomes<br>under this are not taxed'
-    add_personal_allowance_line(fig, average_allowance_position, max_height, allowance_annotation_text)
+        if year in decile_starting_incomes:
+            allowance_positions += calculate_allowance_position(year, personal_allowances[year], decile_starting_incomes) - 0.5
+            valid_years_count += 1
+    
+    if valid_years_count > 0:
+        average_allowance_position = allowance_positions / valid_years_count
+        allowance_annotation_text = f'Personal allowance - incomes<br>under this are not taxed'
+        add_personal_allowance_line(fig, average_allowance_position, max_height, allowance_annotation_text)
     
     return fig
+
 
 
 def main():
@@ -192,27 +221,27 @@ def main():
     
     width = 0.2
     logo = load_logo(logo_file)
-    personal_allowances = read_personal_allowances('penalties_data.xlsx', 'personal allowance')
+    personal_allowances = read_personal_allowances(f'{DIRECTORY}penalties_data.xlsx', 'personal allowance')
 
     # this runs first for the late filing dataset, then late payment
     for dataset in datasets:
-        title = f"Number of {dataset} penalties on taxpayers in each income decile - 2018/19  to 2021/22"
-        df, decile_starting_incomes = read_dataset('penalties_data.xlsx', dataset)
+        title = f"Number of {dataset} penalties on taxpayers in each income decile - 2018/19 to 2021/22"
+        df, decile_starting_incomes = read_dataset(f'{DIRECTORY}penalties_data.xlsx', dataset)
         penalties = prepare_penalties_data(df, years)
         
         clustered_barchart_fig = create_clustered_barchart(title, years, width, logo, decile_names)
         add_clustered_bars(clustered_barchart_fig, years, penalties, colors_charged, colors_appealed, deciles, width)
         add_year_annotations(clustered_barchart_fig, years, deciles, width)
         
-        clustered_barchart_fig.write_image(f"penalties_{dataset}_all.png", scale=1, width=1200, height=800)
+        clustered_barchart_fig.write_image(f"{DIRECTORY}penalties_{dataset}_all.png", scale=1, width=1200, height=800)
         
         total_charged, total_appealed = sum_penalties_by_decile(df)
         total_barchart_fig = create_total_barchart(deciles, decile_names, total_charged, total_appealed, logo, dataset, personal_allowances, decile_starting_incomes)
-        total_barchart_fig.write_image(f"total_penalties_{dataset}.png", scale=1, width=1200, height=800)
+        total_barchart_fig.write_image(f"{DIRECTORY}total_penalties_{dataset}.png", scale=1, width=1200, height=800)
 
         yearly_barchart_figs = create_yearly_barcharts(years, penalties, deciles, dataset, logo, colors_charged, colors_appealed, personal_allowances, decile_starting_incomes)
         for year in yearly_barchart_figs:
-            yearly_barchart_figs[year].write_image(f"penalties_{dataset}_{year.replace('/','-')}.png", scale=1, width=1200, height=800)
+            yearly_barchart_figs[year].write_image(f"{DIRECTORY}penalties_{dataset}_{year.replace('/','-')}.png", scale=1, width=1200, height=800)
             
 
 
